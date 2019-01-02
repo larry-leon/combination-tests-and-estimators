@@ -1,0 +1,174 @@
+\documentclass[9pt]{article}
+\usepackage[colorlinks=true, urlcolor=citecolor, linkcolor=citecolor, citecolor=citecolor]{hyperref}
+
+
+\usepackage{longtable,ctable}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsfonts}
+\usepackage{multirow}
+\usepackage{amsthm}
+\usepackage{graphicx}
+
+\theoremstyle{definition}
+\newtheorem{definition}{Definition}[section]
+
+\theoremstyle{remark}
+\newtheorem{remark}{Remark}
+
+\textheight=9.0in \textwidth=6.5in \topmargin=0in
+\evensidemargin=0in \oddsidemargin=0in
+
+
+\begin{document}
+%\maketitle
+
+\raggedbottom
+
+
+\section{Simulated Data Analysis Example}
+
+<<echo=FALSE>>=
+  opts_chunk$set (warning = FALSE, message = FALSE, tidy=TRUE, echo=FALSE, width=100, fig.width = 10, fig.height = 6, out.width = "1.00\\textwidth")
+@
+
+
+<<echo=TRUE>>=
+rm(list=ls())
+require(survival)
+# Installation of nphsim package 
+##install.packages("devtools")
+#library(devtools)
+#install_github("keaven/nphsim")
+library("nphsim")
+# Analyisis code
+source("../R/cox_rhogamma_functions.R")
+source("../R/km_resampling_functions.R")
+source("../R/weighted_logrank.R")
+@
+
+
+<<echo=TRUE>>=
+eta<-round(0.003991994,3)
+# Baseline hazard function
+lam0<-round(0.07675284,3)
+# change-point(s) at 6-months
+# HR=1 for t<6; HR=0.5 for t>=6
+intervals<-c(6)
+hr.cp<-c(1,0.50)
+lambdaC<-c(lam0,lam0)
+lambdaE<-hr.cp*lambdaC
+n<-150
+EDr<-0.70
+## e.g., EDr=0.70 --> 70% of sample size
+event.trigger<-round(EDr*(2*n))
+R <- c(3, 3, 6 ) # enrollment period: total of 12 months.
+gamma <-c(2*c(n/6,n/3,n/2))*c(1/3,1/3,1/6) # ramp-up enrollment
+set.seed(8316951) # Initialize seed for simulated dataset
+# Single simulated dataset  
+sims.data<-nphsim(nsim=1,lambdaC=lambdaC, lambdaE=lambdaE, intervals=intervals, 
+                    ssC=n, ssE=n, gamma= gamma, R= R, eta=eta)
+# Extract data corresponding to analysis datacut
+sims.cut<-simtest(sims.data, anatype='event',anaD=c(event.trigger))
+data.cuts<-sims.cut$simd
+# ss<-1 (Extract the single simulated dataset)
+ss<-1
+sim.data.s<-data.cuts[which(data.cuts$sim==ss),]  
+# Simulated survival time
+Y<-sim.data.s$aval
+# Delta is event indicator (1=event; 0=censored)
+Delta<-1-sim.data.s$cnsr
+# Treatment indicator
+X<-ifelse(sim.data.s$treatment=="control",0,1)  
+# Number of resamples=draws (synthetic martingale resampling)
+draws<-10000
+set.seed(123) # Initialize seed for resampling
+# rgs=(rho,gamma): (0,0) denotes rho=0, gamma=0 (log-rank)
+# (0,1) denotes rho=0, gamma=1 (etc)
+# (-1,-1) includes RMST
+rgs<-list(c(0,0),
+            c(0,1),c(1,0),c(1,1),c(-1,-1))
+
+temp<-fit.combo.wlr(rgs=rgs,time=Y,delta=Delta,z=X,draws=draws,plot.rg=TRUE,print.results=FALSE)
+est.out<-temp$WLR
+rs<-est.out$rho
+gs<-est.out$gamma
+# Extract RMST
+rmst<-est.out[which(rs==-1 & gs==-1),]
+wlr.est<-as.data.frame(est.out[which(rs>=0),c("est","se.est","Z.score","pval(Z)","estL","estU","estL.sb","estU.sb")])
+rownames(wlr.est)<-c("Cox","FH(0,1)","FH(1,0)","FH(1,1)")
+colnames(wlr.est)<-c("HR","SE","Z","pvalue","Lower","Upper","Lower","Upper")
+# Max combo test and companion estimate
+maxcox<-temp$CoxMax
+
+
+@
+
+<<echo=TRUE>>=
+options(digits=5)
+library(knitr)
+library(kableExtra)
+options(knitr.table.format = "latex") 
+kable(wlr.est,format="latex",booktabs=TRUE,digits=c(3,3,3,5,4,4,4,4),longtable=FALSE,caption="\\label{tab:simanalysis} Simulated data analysis") %>%
+kable_styling(full_width=FALSE,latex_options=c("scale_down")) %>%
+add_header_above(c(" "=5,"Pointwise 95% CI"=2,"Simultaneous 95% CI"=2))
+@
+
+
+Table \ref{tab:simanalysis} displays the $\fh{\rho}{\gamma}$-weighted Cox models corresponding to the $\hbox{Zmax4}$ test.
+The $\hbox{Zmax4}$ test (adjusted) p-value is \Sexpr{maxcox[,"pval(Zmax)"]} with 
+companion Cox model estimated hazard ratio of $\bmax=\Sexpr{round(maxcox[,"est"],digits=3)}$ ($95\%$ CI= $\Sexpr{round(maxcox[,c("estL.sb","estU.sb")],digits=4)}$). 
+The RMST estimate is  \Sexpr{round(rmst[,"est"],digits=3)} ($95\%$ simultaneous CI= \Sexpr{round(rmst[,c("estL.sb","estU.sb")],digits=3)}) 
+with p-value=\Sexpr{round(rmst[,"pval(Z)"],digits=3)}.  Note that the total minutes for resampling (draws=\Sexpr{draws}) is \Sexpr{temp$mins.resample}.
+
+
+\newpage
+In the following we compare to the asymptotic approach as implemented in the nphsim package function rm.combo.WLRmax (See 
+\href{https://rdrr.io/github/keaven/nphsim/man/rm.combo.WLRmax.html}%
+{https://rdrr.io/github/keaven/nphsim/man/rm.combo.WLRmax.html}).
+
+Note that the above approach is applicable to combining weighted log-rank tests which does not include RMST.  
+
+<<echo=TRUE>>=
+# Remove RMST for comparison with asymptotic
+rgs<-list(c(0,0),
+            c(0,1),c(1,0),c(1,1))
+set.seed(123) # Initialize seed for resampling
+temp<-fit.combo.wlr(rgs=rgs,time=Y,delta=Delta,z=X,draws=draws,plot.rg=FALSE,print.results=FALSE)
+est.out<-temp$WLR
+rs<-est.out$rho
+gs<-est.out$gamma
+# Extract RMST
+wlr.est<-as.data.frame(est.out[which(rs>=0),c("est","se.est","Z.score","pval(Z)","estL","estU","estL.sb","estU.sb")])
+rownames(wlr.est)<-c("Cox","FH(0,1)","FH(1,0)","FH(1,1)")
+colnames(wlr.est)<-c("HR","SE","Z","pvalue","Lower","Upper","Lower","Upper")
+# Max combo test and companion estimate
+maxcox<-temp$CoxMax
+
+# Compare with nphsim function rm.combo.WLRmax 
+# which calculates combination tests based on asymptotics 
+library(dplyr)
+library(Matrix)
+temp2<-rm.combo.WLRmax(time=Y,status=Delta,arm=X,wt=list(a1=c(0,1),a2=c(1,0),a3=c(1,1)),adjust.methods="asymp",one.sided=TRUE)
+
+@
+
+
+<<echo=TRUE>>=
+options(digits=6)
+library(knitr)
+library(kableExtra)
+options(knitr.table.format = "latex") 
+kable(wlr.est,format="latex",booktabs=TRUE,digits=c(3,3,3,5,4,4,4,4),longtable=FALSE,caption="\\label{tab:simanalysis2} Simulated data analysis") %>%
+kable_styling(full_width=FALSE,latex_options=c("scale_down")) %>%
+add_header_above(c(" "=5,"Pointwise 95% CI"=2,"Simultaneous 95% CI"=2))
+@
+
+
+Table \ref{tab:simanalysis2} displays the $\fh{\rho}{\gamma}$-weighted Cox models.
+The combination test (adjusted, 1-sided) p-value is \Sexpr{maxcox[,"pval(Zmax)"]} with 
+companion Cox model estimated hazard ratio of $\bmax=\Sexpr{round(maxcox[,"est"],digits=3)}$ ($95\%$ CI= $\Sexpr{round(maxcox[,c("estL.sb","estU.sb")],digits=4)}$). 
+Note that the total minutes for resampling (draws=\Sexpr{draws}) is \Sexpr{temp$mins.resample}. The asymptotic p-value and Cox estimate via rm.combo.WLRmax() function is \Sexpr{temp2$pval} 
+and \Sexpr{temp2$hr.est} with CI= $\Sexpr{c(temp2$hr.low.adjusted.E,temp2$hr.up.adjusted.E)}$.
+
+\end{document}
